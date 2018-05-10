@@ -1,5 +1,6 @@
 package org.mengyun.tcctransaction.server.dao;
 
+import org.mengyun.tcctransaction.server.dto.PageDto;
 import org.mengyun.tcctransaction.server.vo.TransactionVo;
 
 import java.util.List;
@@ -9,10 +10,20 @@ import java.util.List;
  */
 public interface TransactionDao {
 
-    public List<TransactionVo> findTransactions(String domain, Integer pageNum, int pageSize);
+    public List<TransactionVo> findTransactions(Integer pageNum, int pageSize);
 
-    public Integer countOfFindTransactions(String domain);
+    public Integer countOfFindTransactions();
 
-    public boolean resetRetryCount(String domain, byte[] globalTxId, byte[] branchQualifier);
+    public void resetRetryCount(String globalTxId, String branchQualifier);
+
+    public void delete(String globalTxId, String branchQualifier);
+
+    public void confirm(String globalTxId, String branchQualifier);
+
+    public void cancel(String globalTxId, String branchQualifier);
+
+    public String getDomain();
+
+    public PageDto<TransactionVo> findTransactionPageDto(Integer pageNum, int pageSize);
 }
 

@@ -1,21 +1,18 @@
 package org.mengyun.tcctransaction.repository;
 
+import org.apache.log4j.Logger;
 import org.mengyun.tcctransaction.Transaction;
-import org.mengyun.tcctransaction.common.TransactionType;
+import org.mengyun.tcctransaction.repository.helper.ExpandTransactionSerializer;
 import org.mengyun.tcctransaction.repository.helper.JedisCallback;
-import org.mengyun.tcctransaction.repository.helper.TransactionSerializer;
 import org.mengyun.tcctransaction.repository.helper.RedisHelper;
 import org.mengyun.tcctransaction.serializer.JdkSerializationSerializer;
 import org.mengyun.tcctransaction.serializer.ObjectSerializer;
-import org.mengyun.tcctransaction.utils.ByteUtils;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.Pipeline;
 
 import javax.transaction.xa.Xid;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Created by changming.xie on 2/24/16.
@@ -26,6 +23,8 @@ import java.util.Set;
  * appendfsync always
  */
 public class RedisTransactionRepository extends CachableTransactionRepository {
+
+    static final Logger logger = Logger.getLogger(RedisTransactionRepository.class.getSimpleName());
 
     private JedisPool jedisPool;
 
@@ -52,16 +51,27 @@ public class RedisTransactionRepository extends CachableTransactionRepository {
     @Override
     protected int doCreate(final Transaction transaction) {
 
+
         try {
-            final byte[] key = RedisHelper.getRedisKey(keyPrefix, transaction.getXid());
             Long statusCode = RedisHelper.execute(jedisPool, new JedisCallback<Long>() {
 
                 @Override
                 public Long doInJedis(Jedis jedis) {
-                    return jedis.hsetnx(key, ByteUtils.longToBytes(transaction.getVersion()), TransactionSerializer.serialize(serializer, transaction));
+
+
+                    List<byte[]> params = new ArrayList<byte[]>();
+
+                    for (Map.Entry<byte[], byte[]> entry : ExpandTransactionSerializer.serialize(serializer, transaction).entrySet()) {
+                        params.add(entry.getKey());
+                        params.add(entry.getValue());
+                    }
+
+                    Object result = jedis.eval("if redis.call('exists', KEYS[1]) == 0 then redis.call('hmset', KEYS[1], unpack(ARGV)); return 1; end; return 0;".getBytes(),
+                            Arrays.asList(RedisHelper.getRedisKey(keyPrefix, transaction.getXid())), params);
+
+                    return (Long) result;
                 }
             });
-
             return statusCode.intValue();
         } catch (Exception e) {
             throw new TransactionIOException(e);
@@ -72,13 +82,26 @@ public class RedisTransactionRepository extends CachableTransactionRepository {
     protected int doUpdate(final Transaction transaction) {
 
         try {
-            final byte[] key = RedisHelper.getRedisKey(keyPrefix, transaction.getXid());
+
             Long statusCode = RedisHelper.execute(jedisPool, new JedisCallback<Long>() {
                 @Override
                 public Long doInJedis(Jedis jedis) {
+
                     transaction.updateTime();
                     transaction.updateVersion();
-                    return jedis.hsetnx(key, ByteUtils.longToBytes(transaction.getVersion()), TransactionSerializer.serialize(serializer, transaction));
+
+                    List<byte[]> params = new ArrayList<byte[]>();
+
+                    for (Map.Entry<byte[], byte[]> entry : ExpandTransactionSerializer.serialize(serializer, transaction).entrySet()) {
+                        params.add(entry.getKey());
+                        params.add(entry.getValue());
+                    }
+
+                    Object result = jedis.eval(String.format("if redis.call('hget',KEYS[1],'VERSION') == '%s' then redis.call('hmset', KEYS[1], unpack(ARGV)); return 1; end; return 0;",
+                                    transaction.getVersion() - 1).getBytes(),
+                            Arrays.asList(RedisHelper.getRedisKey(keyPrefix, transaction.getXid())), params);
+
+                    return (Long) result;
                 }
             });
 
@@ -89,15 +112,17 @@ public class RedisTransactionRepository extends CachableTransactionRepository {
     }
 
     @Override
-    protected int doDelete(Transaction transaction) {
+    protected int doDelete(final Transaction transaction) {
         try {
-            final byte[] key = RedisHelper.getRedisKey(keyPrefix, transaction.getXid());
+
             Long result = RedisHelper.execute(jedisPool, new JedisCallback<Long>() {
                 @Override
                 public Long doInJedis(Jedis jedis) {
-                    return jedis.del(key);
+
+                    return jedis.del(RedisHelper.getRedisKey(keyPrefix, transaction.getXid()));
                 }
             });
+
             return result.intValue();
         } catch (Exception e) {
             throw new TransactionIOException(e);
@@ -105,15 +130,20 @@ public class RedisTransactionRepository extends CachableTransactionRepository {
     }
 
     @Override
-    protected Transaction doFindOne(Xid xid) {
+    protected Transaction doFindOne(final Xid xid) {
 
         try {
+            Long startTime = System.currentTimeMillis();
+            Map<byte[], byte[]> content = RedisHelper.execute(jedisPool, new JedisCallback<Map<byte[], byte[]>>() {
+                @Override
+                public Map<byte[], byte[]> doInJedis(Jedis jedis) {
+                    return jedis.hgetAll(RedisHelper.getRedisKey(keyPrefix, xid));
+                }
+            });
+            logger.info("redis find cost time :" + (System.currentTimeMillis() - startTime));
 
-            final byte[] key = RedisHelper.getRedisKey(keyPrefix, xid);
-            byte[] content = RedisHelper.getKeyValue(jedisPool, key);
-
-            if (content != null) {
-                return TransactionSerializer.deserialize(serializer, content);
+            if (content != null && content.size() > 0) {
+                return ExpandTransactionSerializer.deserialize(serializer, content);
             }
             return null;
         } catch (Exception e) {
@@ -141,23 +171,40 @@ public class RedisTransactionRepository extends CachableTransactionRepository {
     protected List<Transaction> doFindAll() {
 
         try {
-            List<Transaction> transactions = new ArrayList<Transaction>();
-            Set<byte[]> keys = RedisHelper.execute(jedisPool, new JedisCallback<Set<byte[]>>() {
+
+            final Set<byte[]> keys = RedisHelper.execute(jedisPool, new JedisCallback<Set<byte[]>>() {
                 @Override
                 public Set<byte[]> doInJedis(Jedis jedis) {
                     return jedis.keys((keyPrefix + "*").getBytes());
                 }
             });
 
-            for (final byte[] key : keys) {
-                byte[] content = RedisHelper.getKeyValue(jedisPool, key);
 
-                if (content != null) {
-                    transactions.add(TransactionSerializer.deserialize(serializer, content));
+            return RedisHelper.execute(jedisPool, new JedisCallback<List<Transaction>>() {
+                @Override
+                public List<Transaction> doInJedis(Jedis jedis) {
+
+                    Pipeline pipeline = jedis.pipelined();
+
+                    for (final byte[] key : keys) {
+                        pipeline.hgetAll(key);
+                    }
+                    List<Object> result = pipeline.syncAndReturnAll();
+
+                    List<Transaction> list = new ArrayList<Transaction>();
+                    for (Object data : result) {
+
+                        if (data != null && ((Map<byte[], byte[]>) data).size() > 0) {
+
+                            list.add(ExpandTransactionSerializer.deserialize(serializer, (Map<byte[], byte[]>) data));
+                        }
+
+                    }
+
+                    return list;
                 }
-            }
+            });
 
-            return transactions;
         } catch (Exception e) {
             throw new TransactionIOException(e);
         }

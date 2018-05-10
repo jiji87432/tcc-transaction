@@ -7,6 +7,7 @@ import org.mengyun.tcctransaction.common.TransactionType;
 
 import java.util.Deque;
 import java.util.LinkedList;
+import java.util.concurrent.ExecutorService;
 
 /**
  * Created by changmingxie on 10/26/15.
@@ -19,8 +20,17 @@ public class TransactionManager {
 
     private static final ThreadLocal<Deque<Transaction>> CURRENT = new ThreadLocal<Deque<Transaction>>();
 
+    private ExecutorService executorService;
+
     public void setTransactionRepository(TransactionRepository transactionRepository) {
         this.transactionRepository = transactionRepository;
+    }
+
+    public void setExecutorService(ExecutorService executorService) {
+        this.executorService = executorService;
+    }
+
+    public TransactionManager() {
     }
 
     public Transaction begin() {
@@ -52,20 +62,87 @@ public class TransactionManager {
         }
     }
 
-    public void commit() {
+    public void commit(boolean asyncCommit) {
 
-        Transaction transaction = getCurrentTransaction();
+        final Transaction transaction = getCurrentTransaction();
 
         transaction.changeStatus(TransactionStatus.CONFIRMING);
 
         transactionRepository.update(transaction);
 
+        if (asyncCommit) {
+            try {
+                Long statTime = System.currentTimeMillis();
+
+                executorService.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        commitTransaction(transaction);
+                    }
+                });
+                logger.debug("async submit cost time:" + (System.currentTimeMillis() - statTime));
+            } catch (Throwable commitException) {
+                logger.warn("compensable transaction async submit confirm failed, recovery job will try to confirm later.", commitException);
+                throw new ConfirmingException(commitException);
+            }
+        } else {
+            commitTransaction(transaction);
+        }
+    }
+
+    public void syncTransaction() {
+
+        final Transaction transaction = getCurrentTransaction();
+        /**
+         * update the transaction to persist the participant context info
+         */
+        transactionRepository.update(transaction);
+    }
+
+    public void rollback(boolean asyncRollback) {
+
+        final Transaction transaction = getCurrentTransaction();
+        transaction.changeStatus(TransactionStatus.CANCELLING);
+
+        transactionRepository.update(transaction);
+
+        if (asyncRollback) {
+
+            try {
+                executorService.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        rollbackTransaction(transaction);
+                    }
+                });
+            } catch (Throwable rollbackException) {
+                logger.warn("compensable transaction async rollback failed, recovery job will try to rollback later.", rollbackException);
+                throw new CancellingException(rollbackException);
+            }
+        } else {
+
+            rollbackTransaction(transaction);
+        }
+    }
+
+
+    private void commitTransaction(Transaction transaction) {
         try {
             transaction.commit();
             transactionRepository.delete(transaction);
         } catch (Throwable commitException) {
-            logger.error("compensable transaction confirm failed.", commitException);
+            logger.warn("compensable transaction confirm failed, recovery job will try to confirm later.", commitException);
             throw new ConfirmingException(commitException);
+        }
+    }
+
+    private void rollbackTransaction(Transaction transaction) {
+        try {
+            transaction.rollback();
+            transactionRepository.delete(transaction);
+        } catch (Throwable rollbackException) {
+            logger.warn("compensable transaction rollback failed, recovery job will try to rollback later.", rollbackException);
+            throw new CancellingException(rollbackException);
         }
     }
 
@@ -81,21 +158,6 @@ public class TransactionManager {
         return transactions != null && !transactions.isEmpty();
     }
 
-    public void rollback() {
-
-        Transaction transaction = getCurrentTransaction();
-        transaction.changeStatus(TransactionStatus.CANCELLING);
-
-        transactionRepository.update(transaction);
-
-        try {
-            transaction.rollback();
-            transactionRepository.delete(transaction);
-        } catch (Throwable rollbackException) {
-            logger.error("compensable transaction rollback failed.", rollbackException);
-            throw new CancellingException(rollbackException);
-        }
-    }
 
     private void registerTransaction(Transaction transaction) {
 

@@ -1,19 +1,20 @@
 package org.mengyun.tcctransaction.server.controller;
 
-import org.mengyun.tcctransaction.server.dao.TransactionDao;
+import org.apache.commons.lang3.StringUtils;
+import org.mengyun.tcctransaction.server.dao.DaoRepository;
+import org.mengyun.tcctransaction.server.dto.PageDto;
 import org.mengyun.tcctransaction.server.vo.CommonResponse;
 import org.mengyun.tcctransaction.server.vo.TransactionVo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Controller;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.servlet.ModelAndView;
 
-import javax.xml.bind.DatatypeConverter;
 import java.util.List;
 
 
@@ -21,60 +22,126 @@ import java.util.List;
  * Created by changming.xie on 8/26/16.
  */
 @Controller
+@RequestMapping("/management")
 public class TransactionController {
 
-    @Autowired
-    @Qualifier("jdbcTransactionDao")
-    private TransactionDao transactionDao;
+    private static final Logger logger = LoggerFactory.getLogger(TransactionController.class);
 
-    @Value("${tcc_domain}")
-    private String tccDomain;
+    @Autowired
+    private DaoRepository daoRepository;
 
     public static final Integer DEFAULT_PAGE_NUM = 1;
 
     public static final int DEFAULT_PAGE_SIZE = 10;
 
-    @RequestMapping(value = "/management", method = RequestMethod.GET)
-    public ModelAndView manager() {
+
+    @RequestMapping(method = RequestMethod.GET)
+    public ModelAndView manager(@RequestParam(value = "domain", required = false) String domain,
+                                @RequestParam(value = "pagenum", required = false) Integer pageNum) {
+
+        logger.info("query with domain:{},pageNum:{}", domain, pageNum);
+
+        if (StringUtils.isEmpty(domain)) {
+            return manager();
+        }
+
+        if (pageNum == null) {
+            return manager(domain);
+        }
+
         ModelAndView modelAndView = new ModelAndView("manager");
-        return modelAndView;
-    }
 
-    @RequestMapping(value = "/management/domain/{domain}", method = RequestMethod.GET)
-    public ModelAndView manager(@PathVariable String domain) {
-        return manager(domain, DEFAULT_PAGE_NUM);
-    }
 
-    @RequestMapping(value = "/management/domain/{domain}/pagenum/{pageNum}", method = RequestMethod.GET)
-    public ModelAndView manager(@PathVariable String domain, @PathVariable Integer pageNum) {
-        ModelAndView modelAndView = new ModelAndView("manager");
+        PageDto<TransactionVo> pageDto = daoRepository.getDao(domain).findTransactionPageDto(pageNum, DEFAULT_PAGE_SIZE);
 
-        List<TransactionVo> transactionVos = transactionDao.findTransactions(domain, pageNum, DEFAULT_PAGE_SIZE);
-        Integer totalCount = transactionDao.countOfFindTransactions(domain);
-        Integer pages = totalCount/DEFAULT_PAGE_SIZE;
+        List<TransactionVo> transactionVos = pageDto.getData();
+        Integer totalCount = pageDto.getTotalCount();
+
+        Integer pages = totalCount / DEFAULT_PAGE_SIZE;
         if (totalCount % DEFAULT_PAGE_SIZE > 0) {
             pages++;
         }
-        modelAndView.addObject("transactionVos", transactionVos);
-        modelAndView.addObject("pageNum",pageNum);
-        modelAndView.addObject("pageSize", DEFAULT_PAGE_SIZE);
         modelAndView.addObject("pages", pages);
-        modelAndView.addObject("domain",domain);
-        modelAndView.addObject("urlWithoutPaging", tccDomain + "/management/domain/" + domain);
+
+        modelAndView.addObject("transactionVos", transactionVos);
+        modelAndView.addObject("pageNum", pageNum);
+        modelAndView.addObject("pageSize", DEFAULT_PAGE_SIZE);
+        modelAndView.addObject("domains", daoRepository.getDomains());
+        modelAndView.addObject("currentDomain", domain);
+        modelAndView.addObject("urlWithoutPaging", "management?domain=" + domain);
         return modelAndView;
     }
 
-    @RequestMapping(value = "/domain/{domain}/retry/reset", method = RequestMethod.PUT)
+    @RequestMapping(value = "/retry/reset", method = RequestMethod.PUT)
     @ResponseBody
-    public CommonResponse<Void> reset(@PathVariable String domain, String globalTxId, String branchQualifier) {
+    public CommonResponse<Void> reset(String domain, String globalTxId, String branchQualifier) {
 
-        transactionDao.resetRetryCount(domain,
-                DatatypeConverter.parseHexBinary(globalTxId),
-                DatatypeConverter.parseHexBinary(branchQualifier));
+        logger.info("request /retry/reset with domain: {} globalTxId: {} branchQualifier: {} ",
+                new Object[]{domain, globalTxId, branchQualifier});
+
+        daoRepository.getDao(domain).resetRetryCount(
+                globalTxId,
+                branchQualifier);
 
         return new CommonResponse<Void>();
     }
 
+    @RequestMapping(value = "/retry/delete", method = RequestMethod.PUT)
+    @ResponseBody
+    public CommonResponse<Void> delete(String domain, String globalTxId, String branchQualifier) {
+
+        logger.info("request /retry /delete with domain: {} globalTxId: {} branchQualifier: {} ",
+                new Object[]{domain, globalTxId, branchQualifier});
+
+        daoRepository.getDao(domain).resetRetryCount(
+                globalTxId,
+                branchQualifier);
+
+        return new CommonResponse<Void>();
+    }
+
+    @RequestMapping(value = "/retry/confirm", method = RequestMethod.PUT)
+    @ResponseBody
+    public CommonResponse<Void> confirm(String domain, String globalTxId, String branchQualifier) {
+
+        logger.info("request /retry/confirm with domain: {} globalTxId: {} branchQualifier: {} ",
+                new Object[]{domain, globalTxId, branchQualifier});
+
+        daoRepository.getDao(domain).resetRetryCount(
+                globalTxId,
+                branchQualifier);
+
+        return new CommonResponse<Void>();
+    }
+
+    @RequestMapping(value = "/retry/cancel", method = RequestMethod.PUT)
+    @ResponseBody
+    public CommonResponse<Void> cancel(String domain, String globalTxId, String branchQualifier) {
+
+        logger.info("request /retry/cancel with domain: {} globalTxId: {} branchQualifier: {} ",
+                new Object[]{domain, globalTxId, branchQualifier});
+
+        daoRepository.getDao(domain).resetRetryCount(
+                globalTxId,
+                branchQualifier);
+
+        return new CommonResponse<Void>();
+    }
+
+    public ModelAndView manager() {
+
+        logger.info("query without any parameter");
+
+        ModelAndView modelAndView = new ModelAndView("manager");
+        modelAndView.addObject("domains", daoRepository.getDomains());
+        return modelAndView;
+    }
+
+    public ModelAndView manager(String domain) {
+
+        logger.info("query with domain:{}", domain);
+        return manager(domain, DEFAULT_PAGE_NUM);
+    }
 
 
 }

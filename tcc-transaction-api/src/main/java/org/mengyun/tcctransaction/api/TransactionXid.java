@@ -62,8 +62,8 @@ public class TransactionXid implements Xid, Serializable {
     public String toString() {
 
         StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append("globalTransactionId:").append(UUID.nameUUIDFromBytes(globalTransactionId).toString());
-        stringBuilder.append(",").append("branchQualifier:").append(UUID.nameUUIDFromBytes(branchQualifier).toString());
+        stringBuilder.append(UUID.nameUUIDFromBytes(globalTransactionId).toString());
+        stringBuilder.append(":").append(UUID.nameUUIDFromBytes(branchQualifier).toString());
 
         return stringBuilder.toString();
     }
@@ -83,8 +83,7 @@ public class TransactionXid implements Xid, Serializable {
             System.arraycopy(branchQualifier, 0, cloneBranchQualifier, 0, branchQualifier.length);
         }
 
-        TransactionXid clone = new TransactionXid(cloneGlobalTransactionId, cloneBranchQualifier);
-        return clone;
+        return new TransactionXid(cloneGlobalTransactionId, cloneBranchQualifier);
     }
 
     public int hashCode() {
@@ -107,22 +106,22 @@ public class TransactionXid implements Xid, Serializable {
         TransactionXid other = (TransactionXid) obj;
         if (this.getFormatId() != other.getFormatId()) {
             return false;
-        } else if (Arrays.equals(branchQualifier, other.branchQualifier) == false) {
+        } else if (!Arrays.equals(branchQualifier, other.branchQualifier)) {
             return false;
-        } else if (Arrays.equals(globalTransactionId, other.globalTransactionId) == false) {
+        } else if (!Arrays.equals(globalTransactionId, other.globalTransactionId)) {
             return false;
         }
         return true;
     }
 
-    public static byte[] uuidToByteArray(UUID uuid) {
+    private static byte[] uuidToByteArray(UUID uuid) {
         ByteBuffer bb = ByteBuffer.wrap(new byte[16]);
         bb.putLong(uuid.getMostSignificantBits());
         bb.putLong(uuid.getLeastSignificantBits());
         return bb.array();
     }
 
-    public static UUID byteArrayToUUID(byte[] bytes) {
+    private static UUID byteArrayToUUID(byte[] bytes) {
         ByteBuffer bb = ByteBuffer.wrap(bytes);
         long firstLong = bb.getLong();
         long secondLong = bb.getLong();
